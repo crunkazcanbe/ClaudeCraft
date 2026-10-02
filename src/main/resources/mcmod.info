@@ -1,0 +1,15 @@
+[
+  {
+    "modid": "claudecraft",
+    "name": "ClaudeCraft",
+    "description": "Gives Claude precise control of Minecraft (camera, movement, clicks, block placement) over a localhost socket. Client-only dev/automation tool.",
+    "version": "0.1.0",
+    "mcversion": "1.12.2",
+    "authorList": ["crunkazcanbe", "Claude"],
+    "logoFile": "",
+    "url": "",
+    "credits": "",
+    "screenshots": [],
+    "dependencies": []
+  }
+]
