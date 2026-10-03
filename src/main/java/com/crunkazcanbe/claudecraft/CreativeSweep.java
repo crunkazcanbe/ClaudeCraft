@@ -39,13 +39,18 @@ public final class CreativeSweep {
     private List<CreativeTabs> tabs;
     private int tabIdx, row, rows, wait, items, missing, invisible, tooltip;
     private PrintWriter out;
+    private NonNullList<ItemStack> pending;   // items of the current tab still to check (a few hundred per tick)
+    private int pendingAt;
     private String status = "not started";
     private long started;
 
     private static Method setTab;
     private static Field tabPage, scroll;
 
-    String start() {
+    String start() { return start(1); }
+
+    /** start at tab number {@code from} (1-based) — to resume after a crash */
+    String start(int from) {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.player == null) return "ERR not in a world";
         if (!mc.player.isCreative()) return "ERR switch to creative first (/gamemode 1)";
@@ -57,12 +62,13 @@ public final class CreativeSweep {
                 scroll = ReflectionHelper.findField(GuiContainerCreative.class, "currentScroll", "field_147067_x");
             }
             File f = new File(mc.mcDataDir, "logs/claudecraft-sweep.txt");
-            out = new PrintWriter(new FileWriter(f, false), true);
+            out = new PrintWriter(new FileWriter(f, from > 1), true);
         } catch (Throwable t) { return "ERR " + t; }
         tabs = new ArrayList<>();
         for (CreativeTabs t : CreativeTabs.CREATIVE_TAB_ARRAY)
             if (t != null && t != CreativeTabs.SEARCH && t != CreativeTabs.INVENTORY && t != CreativeTabs.HOTBAR) tabs.add(t);
-        tabIdx = -1; row = rows = wait = items = missing = invisible = tooltip = 0;
+        pending = null;
+        tabIdx = Math.max(0, from - 1) - 1; row = rows = wait = items = missing = invisible = tooltip = 0;
         started = System.currentTimeMillis();
         out.println("Creative sweep " + new java.util.Date() + " — " + tabs.size() + " tabs");
         mc.displayGuiScreen(new GuiContainerCreative(mc.player));
@@ -84,6 +90,13 @@ public final class CreativeSweep {
         if (!(mc.currentScreen instanceof GuiContainerCreative)) mc.displayGuiScreen(new GuiContainerCreative(mc.player));
         if (wait-- > 0) return;
         GuiContainerCreative g = (GuiContainerCreative) mc.currentScreen;
+        if (pending != null) {                               // check this tab's items in batches so the game never freezes
+            int end = Math.min(pending.size(), pendingAt + 400);
+            for (; pendingAt < end; pendingAt++) check(mc, pending.get(pendingAt));
+            status = status.replaceAll(" \\(checking.*", "") + " (checking " + pendingAt + "/" + pending.size() + ")";
+            if (pendingAt >= pending.size()) { pending = null; out.flush(); }
+            return;
+        }
         if (row < rows) {                                    // next page of this tab — the frame in between draws it
             row++;
             float f = rows == 0 ? 0 : row / (float) rows;
@@ -113,8 +126,7 @@ public final class CreativeSweep {
         }
         NonNullList<ItemStack> list = ((GuiContainerCreative.ContainerCreative) g.inventorySlots).itemList;
         out.println("\n## " + label + " [" + t.getTabLabel() + "] — " + list.size() + " items" + (label.contains(".") ? "   (TAB NAME NOT TRANSLATED)" : ""));
-        for (ItemStack s : list) check(mc, s);
-        out.flush();
+        pending = list; pendingAt = 0;
         rows = Math.max(0, (list.size() + 8) / 9 - 5);
         row = 0;
         try { scroll.setFloat(g, 0); } catch (Throwable ignored) {}

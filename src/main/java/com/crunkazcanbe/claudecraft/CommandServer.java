@@ -215,7 +215,7 @@ public final class CommandServer {
                 return onClient(() -> { Minecraft.getMinecraft().refreshResources(); return "OK resources reloaded"; });
 
             case "sweep": // sweep   go through EVERY creative tab, scroll every page, check every item (report: logs/claudecraft-sweep.txt)
-                return onClient(() -> CreativeSweep.INSTANCE.start());
+                { final int from = p.length > 1 ? Integer.parseInt(p[1]) : 1; return onClient(() -> CreativeSweep.INSTANCE.start(from)); }
             case "sweepstatus": // sweepstatus   progress of the creative sweep
                 return onClient(() -> CreativeSweep.INSTANCE.status());
             case "perf": // perf   FPS, integrated-server tick time/TPS, chunks, entities, memory (one line)
