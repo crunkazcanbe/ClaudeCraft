@@ -4,11 +4,11 @@ A client-side Minecraft 1.12.2 mod that opens a local text socket so an AI agent
 
 ## About
 
-ClaudeCraft listens on `127.0.0.1:25599`. A controller connects, sends one command per line, and gets one reply line back. Every command runs on the Minecraft client thread, so it acts exactly like a player at the keyboard: angles are set directly (no fighting the mouse cursor), keys are pressed through the real key bindings, and clicks go through the normal player controller packets. Because of that, it works in singleplayer and on multiplayer servers.
+ClaudeCraft listens on `127.0.0.1:25599`. A controller connects, sends one command per line, and gets one reply line back. Every command runs on the Minecraft client thread at the start of the next client tick (outside the scheduled-task lock, so commands that start a world cannot deadlock the game), so it acts exactly like a player at the keyboard: angles are set directly (no fighting the mouse cursor), keys are pressed through the real key bindings, and clicks go through the normal player controller packets. Because of that, it works in singleplayer and on multiplayer servers.
 
 It was built for testing and automating the Pride modpack, a Minecraft 1.12.2 pack of around 750 mods — walking an AI through menus, checking builds, reproducing crashes, and sweeping every creative tab for missing textures and tooltip crashes. It has no dependencies and works in any 1.12.2 Forge or Cleanroom pack.
 
-It uses no access transformers and no mixins. The only reflection is on `GuiScreen` (button list, `actionPerformed`, `keyTyped`, `mouseClicked`/`mouseReleased`) and the creative inventory, for driving open screens.
+It uses no access transformers and no mixins. The only reflection is on `GuiScreen` (button list, `actionPerformed`, `keyTyped`, `mouseClicked`/`mouseReleased`), scroll lists (`GuiSlot`, `GuiScrollingList` and copies) and the creative inventory, for driving open screens.
 
 ## Safety
 
@@ -71,6 +71,7 @@ OK lookat yaw=... pitch=...
 | `debug` | `<t\|reload\|a\|chunks\|b\|hitboxes\|d\|clearchat>` | F3+T reload resources, F3+A reload chunks, F3+B toggle hitboxes, F3+D clear chat. |
 | `perf` | — | One line: FPS, integrated-server tick ms and TPS, chunk stats, entity count, memory used/max. |
 | `shot` | — | Save a screenshot to `screenshots/claudecraft.png` in the game folder. |
+| `bigshot` | `[w h] [hud] [fov=N] [name.png]` | Render an off-screen high-resolution screenshot without resizing the window (default 1920x1080, FOV 50, HUD hidden unless `hud`). Saved to `screenshots/` (default `claudecraft_big.png`). |
 
 ### Screens and menus
 
@@ -79,7 +80,7 @@ OK lookat yaw=... pitch=...
 | `gui` | — | JSON for the open screen: class, size, container slots with items, and buttons (`id:label`, `(off)` if disabled). |
 | `button` | `<id>` | Press a button on the open screen (ids from `gui`). |
 | `click` | `<slot#> [left\|right\|shift]` | Click a slot in the open container screen. |
-| `mclick` | `<x> <y> [left\|right]` | Click the open screen at GUI coordinates (moves the pointer there first, renders a hover pass, then clicks). |
+| `mclick` | `<x> <y> [left\|right] [double]` | Click the open screen at GUI coordinates (moves the pointer there first, renders a hover pass, then clicks). A left click on a scroll list (vanilla `GuiSlot`, Forge `GuiScrollingList`, or copies such as OTG's) selects the row under the point directly, since those lists ignore synthetic clicks; `double` double-clicks the row. |
 | `mhover` | `<x> <y>` | Move the pointer over a spot without clicking, so tooltips render. |
 | `tip` | `[slot#\|hand]` | Full tooltip text of an item (container slot, inventory slot, or the held item; default `hand`). |
 | `type` | `<text…>` | Type text into the open screen (text fields, chat). |
@@ -191,7 +192,7 @@ None. The port (`25599`) and bind address (`127.0.0.1`) are fixed. ClaudeCraft a
 
 ## Install
 
-1. Drop `ClaudeCraft-1.12.2-0.1.0.jar` into the client's `mods` folder.
+1. Drop `ClaudeCraft-1.12.2-<version>.jar` into the client's `mods` folder.
 2. Start the game. The log shows `[ClaudeCraft] command server listening on 127.0.0.1:25599`.
 3. Connect with any TCP client (`nc 127.0.0.1 25599`, a Python socket, an agent tool) and send commands.
 
@@ -222,4 +223,4 @@ MIT License — © 2026 crunkazcanbe
 
 ## Credits
 
-Made by crunkazcanbe, with Claude.
+Made with [Claude Code](https://claude.com/claude-code) and [Blockbench](https://www.blockbench.net).

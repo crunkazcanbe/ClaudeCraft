@@ -36,6 +36,7 @@ public class ClaudeCraft {
     public void init(FMLInitializationEvent event) {
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(new ChatLog());
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(CreativeSweep.INSTANCE);
+        net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(new CommandServer.PendingWorld());
         CommandServer.start();
     }
 }

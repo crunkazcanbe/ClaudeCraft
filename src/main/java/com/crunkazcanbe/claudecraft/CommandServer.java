@@ -31,7 +31,8 @@ import java.util.concurrent.Callable;
  */
 public final class CommandServer {
 
-    public static final int PORT = 25599;
+    /** -Dclaudecraft.port=N lets a second test instance run next to the game (default 25599). */
+    public static final int PORT = Integer.getInteger("claudecraft.port", 25599);
     private static volatile boolean started = false;
 
     private CommandServer() {}
@@ -47,7 +48,14 @@ public final class CommandServer {
     }
 
     private static void run() {
-        try (ServerSocket server = new ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"))) {
+        ServerSocket bound = null;
+        for (int port = PORT; port < PORT + 10 && bound == null; port++) {   // another game already has 25599 -> take the next free one
+            try { bound = new ServerSocket(port, 8, InetAddress.getByName("127.0.0.1")); }
+            catch (IOException busy) { continue; }
+            if (ClaudeCraft.LOG != null) ClaudeCraft.LOG.info("[ClaudeCraft] command server bound to 127.0.0.1:" + port);
+        }
+        if (bound == null) return;
+        try (ServerSocket server = bound) {
             while (true) {
                 Socket sock = server.accept();
                 handleClient(sock);
@@ -78,15 +86,28 @@ public final class CommandServer {
         }
     }
 
-    /** Schedule a callable on the client thread and block for its result. */
+    /**
+     * Commands run on the client thread at the start of the next client tick, NOT through addScheduledTask: scheduled
+     * tasks run while Minecraft holds its task-queue lock, and any command that starts a world from there (open world,
+     * "Create New World" button) deadlocked as soon as the server thread queued a client task (2026-10-03, twice).
+     */
+    static final java.util.concurrent.ConcurrentLinkedQueue<java.util.concurrent.FutureTask<?>> QUEUE =
+            new java.util.concurrent.ConcurrentLinkedQueue<java.util.concurrent.FutureTask<?>>();
+
     static String onClient(Callable<String> c) throws Exception {
-        ListenableFuture<String> f = Minecraft.getMinecraft().addScheduledTask(c);
-        return f.get();
+        return onClient2(c);
     }
 
-    /** same as onClient, any result type */
     static <T> T onClient2(Callable<T> c) throws Exception {
-        return Minecraft.getMinecraft().addScheduledTask(c).get();
+        if (Minecraft.getMinecraft().isCallingFromMinecraftThread()) return c.call();
+        java.util.concurrent.FutureTask<T> t = new java.util.concurrent.FutureTask<T>(c);
+        QUEUE.add(t);
+        return t.get();
+    }
+
+    static void drainQueue() {
+        java.util.concurrent.FutureTask<?> t;
+        while ((t = QUEUE.poll()) != null) t.run();
     }
 
     private static String handle(String line) throws Exception {
@@ -414,6 +435,8 @@ public final class CommandServer {
                     // Hover pass at the click point: screens that hit-test while drawing see the cursor
                     // here even when the OS pointer can't be moved (Cleanroom's LWJGL on macOS).
                     s.drawScreen(mx, my, 0f);
+                    String list = btn == 0 ? listClick(s, mx, my, line.contains("double")) : null;   // scroll lists poll the mouse: pick the row directly
+                    if (list != null) return "OK mclick list " + list;
                     java.lang.reflect.Method down = net.minecraftforge.fml.relauncher.ReflectionHelper.findMethod(
                             net.minecraft.client.gui.GuiScreen.class, "mouseClicked", "func_73864_a", int.class, int.class, int.class);
                     java.lang.reflect.Method up = net.minecraftforge.fml.relauncher.ReflectionHelper.findMethod(
@@ -450,6 +473,12 @@ public final class CommandServer {
                     return "OK closed";
                 });
 
+            case "hidegui": // hidegui [on|off]   the F1 view: no hotbar, hand, chat or crosshair (for clean screenshots)
+                return onClient(() -> {
+                    Minecraft mc = Minecraft.getMinecraft();
+                    mc.gameSettings.hideGUI = p.length > 1 ? p[1].equalsIgnoreCase("on") : !mc.gameSettings.hideGUI;
+                    return "OK hideGUI " + mc.gameSettings.hideGUI;
+                });
             case "shot": // shot   save an in-game screenshot to <game>/screenshots/claudecraft.png
                 return onClient(() -> {
                     Minecraft mc = Minecraft.getMinecraft();
@@ -457,6 +486,39 @@ public final class CommandServer {
                             mc.mcDataDir, "claudecraft.png", mc.displayWidth, mc.displayHeight, mc.getFramebuffer());
                     return "OK " + msg.getUnformattedText();
                 });
+
+            case "bigshot": { // bigshot [w h] [hud] [name]   off-screen high-res screenshot (HUD hidden unless "hud")
+                String[] a = line.trim().split("\\s+");
+                final int bw = a.length > 2 ? Integer.parseInt(a[1]) : 1920, bh = a.length > 2 ? Integer.parseInt(a[2]) : 1080;
+                final boolean hud = line.contains(" hud");
+                java.util.regex.Matcher fm = java.util.regex.Pattern.compile("fov=(\\d+)").matcher(line);
+                final float fov = fm.find() ? Float.parseFloat(fm.group(1)) : 50F;
+                String nm = "claudecraft_big.png";
+                for (String t : a) if (t.endsWith(".png")) nm = t;
+                final String name = nm;
+                return onClient(() -> {
+                    Minecraft mc = Minecraft.getMinecraft();
+                    int ow = mc.displayWidth, oh = mc.displayHeight;
+                    boolean hid = mc.gameSettings.hideGUI;
+                    float ofov = mc.gameSettings.fovSetting;
+                    try {
+                        mc.gameSettings.hideGUI = !hud;
+                        mc.gameSettings.fovSetting = fov;
+                        mc.displayWidth = bw; mc.displayHeight = bh;
+                        mc.getFramebuffer().createBindFramebuffer(bw, bh);
+                        mc.entityRenderer.updateCameraAndRender(1.0F, System.nanoTime());
+                        mc.entityRenderer.updateCameraAndRender(1.0F, System.nanoTime());
+                        net.minecraft.util.text.ITextComponent msg = net.minecraft.util.ScreenShotHelper.saveScreenshot(
+                                mc.mcDataDir, name, bw, bh, mc.getFramebuffer());
+                        return "OK " + msg.getUnformattedText();
+                    } finally {
+                        mc.displayWidth = ow; mc.displayHeight = oh;
+                        mc.getFramebuffer().createBindFramebuffer(ow, oh);
+                        mc.gameSettings.hideGUI = hid;
+                        mc.gameSettings.fovSetting = ofov;
+                    }
+                });
+            }
 
             case "worlds": // worlds   list saved singleplayer worlds: folder = display name
                 return onClient(() -> {
@@ -475,8 +537,10 @@ public final class CommandServer {
                     for (net.minecraft.world.storage.WorldSummary w : mc.getSaveLoader().getSaveList()) {
                         if (!w.getFileName().equals(folder)) continue;
                         // The summary has to be the real one from the save list: FML reads its WorldInfo.
-                        net.minecraftforge.fml.client.FMLClientHandler.instance().tryLoadExistingWorld(
-                                new net.minecraft.client.gui.GuiWorldSelection(new net.minecraft.client.gui.GuiMainMenu()), w);
+                        // Not here: a scheduled task holds Minecraft's task-queue lock, and loading a world from inside it
+                        // deadlocks as soon as the server thread queues a client task (Mystcraft + Let Sleeping Dogs Lie,
+                        // 2026-10-03). PendingWorld opens it on the next client tick, outside the lock.
+                        PendingWorld.summary = w;
                         return "OK loading " + folder;
                     }
                     return "ERR no world folder " + folder;
@@ -757,6 +821,61 @@ public final class CommandServer {
                 + "}";
     }
 
+    /**
+     * Scroll lists (Forge GuiScrollingList and its copies like OTG's, vanilla GuiSlot) poll the real mouse, so a
+     * synthetic mouseClicked never selects a row. Find a list field on the screen under (mx,my) and click its row.
+     */
+    private static String listClick(net.minecraft.client.gui.GuiScreen s, int mx, int my, boolean dbl) throws Exception {
+        for (Class<?> c = s.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (f.getType().isPrimitive()) continue;
+                f.setAccessible(true);
+                Object list = f.get(s);
+                if (list == null) continue;
+                if (list instanceof net.minecraft.client.gui.GuiSlot) {
+                    net.minecraft.client.gui.GuiSlot g = (net.minecraft.client.gui.GuiSlot) list;
+                    int i = g.getSlotIndexFromScreenCoords(mx, my);
+                    if (i < 0) continue;
+                    java.lang.reflect.Method m = net.minecraftforge.fml.relauncher.ReflectionHelper.findMethod(
+                            net.minecraft.client.gui.GuiSlot.class, "elementClicked", "func_148144_a", int.class, boolean.class, int.class, int.class);
+                    m.invoke(g, i, dbl, mx, my);
+                    return "row " + i + " of " + list.getClass().getSimpleName();
+                }
+                Integer top = intField(list, "top"), bottom = intField(list, "bottom"), left = intField(list, "left"),
+                        right = intField(list, "right"), slotH = intField(list, "slotHeight");
+                if (top == null || bottom == null || left == null || right == null || slotH == null || slotH <= 0) continue;
+                if (mx < left || mx >= right || my < top || my >= bottom) continue;
+                java.lang.reflect.Method click = findMethod(list.getClass(), "elementClicked", int.class, boolean.class);
+                java.lang.reflect.Method size = findMethod(list.getClass(), "getSize");
+                if (click == null || size == null) continue;
+                Integer header = intField(list, "headerHeight");
+                Object sd = fieldValue(list, "scrollDistance");
+                int scroll = sd instanceof Float ? (int) (float) (Float) sd : 0;
+                int i = (my - top - (header == null ? 0 : header) + scroll - 4) / slotH;
+                if (i < 0 || i >= (Integer) size.invoke(list)) return "empty space in " + list.getClass().getSimpleName();
+                Object sel = fieldValue(list, "selectedIndex");
+                if (sel instanceof Integer) setField(list, "selectedIndex", i);
+                click.invoke(list, i, dbl);
+                return "row " + i + " of " + list.getClass().getSimpleName();
+            }
+        }
+        return null;
+    }
+
+    private static java.lang.reflect.Field field(Object o, String name) {
+        for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass())
+            try { java.lang.reflect.Field f = c.getDeclaredField(name); f.setAccessible(true); return f; } catch (NoSuchFieldException ignored) {}
+        return null;
+    }
+    private static Object fieldValue(Object o, String name) throws Exception { java.lang.reflect.Field f = field(o, name); return f == null ? null : f.get(o); }
+    private static Integer intField(Object o, String name) throws Exception { Object v = fieldValue(o, name); return v instanceof Integer ? (Integer) v : null; }
+    private static void setField(Object o, String name, Object v) throws Exception { java.lang.reflect.Field f = field(o, name); if (f != null) f.set(o, v); }
+    private static java.lang.reflect.Method findMethod(Class<?> c0, String name, Class<?>... args) {
+        for (Class<?> c = c0; c != null && c != Object.class; c = c.getSuperclass())
+            try { java.lang.reflect.Method m = c.getDeclaredMethod(name, args); m.setAccessible(true); return m; } catch (NoSuchMethodException ignored) {}
+        return null;
+    }
+
     @SuppressWarnings("unchecked")
     private static java.util.List<net.minecraft.client.gui.GuiButton> buttons(net.minecraft.client.gui.GuiScreen s) {
         return (java.util.List<net.minecraft.client.gui.GuiButton>) net.minecraftforge.fml.relauncher.ReflectionHelper
@@ -801,5 +920,21 @@ public final class CommandServer {
 
     static String esc(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /** Opens a world requested by `world` on the next client tick (outside the scheduled-task lock). */
+    public static final class PendingWorld {
+        static volatile net.minecraft.world.storage.WorldSummary summary;
+
+        @net.minecraftforge.fml.common.eventhandler.SubscribeEvent
+        public void tick(net.minecraftforge.fml.common.gameevent.TickEvent.ClientTickEvent e) {
+            if (e.phase != net.minecraftforge.fml.common.gameevent.TickEvent.Phase.START) return;
+            drainQueue();
+            net.minecraft.world.storage.WorldSummary w = summary;
+            if (w == null) return;
+            summary = null;
+            net.minecraftforge.fml.client.FMLClientHandler.instance().tryLoadExistingWorld(
+                    new net.minecraft.client.gui.GuiWorldSelection(new net.minecraft.client.gui.GuiMainMenu()), w);
+        }
     }
 }
